@@ -17,10 +17,11 @@ var errFetchFailed = errors.New("fetch failed")
 
 // MockConvoyFetcher is a mock implementation for testing.
 type MockConvoyFetcher struct {
-	Convoys    []ConvoyRow
-	MergeQueue []MergeQueueRow
-	Polecats   []PolecatRow
-	Error      error
+	Convoys     []ConvoyRow
+	MergeQueue  []MergeQueueRow
+	InternalMRs []InternalMRRow
+	Polecats    []PolecatRow
+	Error       error
 }
 
 func (m *MockConvoyFetcher) FetchConvoys() ([]ConvoyRow, error) {
@@ -33,6 +34,34 @@ func (m *MockConvoyFetcher) FetchMergeQueue() ([]MergeQueueRow, error) {
 
 func (m *MockConvoyFetcher) FetchPolecats() ([]PolecatRow, error) {
 	return m.Polecats, nil
+}
+
+func (m *MockConvoyFetcher) FetchPolecatDetail(sessionID string) (*PolecatDetail, error) {
+	return &PolecatDetail{}, nil
+}
+
+func (m *MockConvoyFetcher) FetchConvoyDetail(convoyID string) (*ConvoyDetail, error) {
+	return &ConvoyDetail{}, nil
+}
+
+func (m *MockConvoyFetcher) FetchMergeHistory(limit int) ([]MergeHistoryRow, error) {
+	return nil, nil
+}
+
+func (m *MockConvoyFetcher) FetchActivity(limit int) ([]ActivityEvent, error) {
+	return nil, nil
+}
+
+func (m *MockConvoyFetcher) FetchHQAgents() ([]HQAgentRow, error) {
+	return nil, nil
+}
+
+func (m *MockConvoyFetcher) FetchHQAgentDetail(sessionID string) (*HQAgentDetail, error) {
+	return &HQAgentDetail{}, nil
+}
+
+func (m *MockConvoyFetcher) FetchInternalMRs() ([]InternalMRRow, error) {
+	return m.InternalMRs, nil
 }
 
 func TestConvoyHandler_RendersTemplate(t *testing.T) {
@@ -195,7 +224,7 @@ func TestConvoyHandler_MultipleConvoys(t *testing.T) {
 	}
 }
 
-// Integration tests for error handling
+// Integration tests for error handling (graceful degradation)
 
 func TestConvoyHandler_FetchConvoysError(t *testing.T) {
 	mock := &MockConvoyFetcher{
@@ -212,13 +241,15 @@ func TestConvoyHandler_FetchConvoysError(t *testing.T) {
 
 	handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusInternalServerError)
+	// Graceful degradation: returns 200 with error displayed in page
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d (graceful degradation)", w.Code, http.StatusOK)
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, "Failed to fetch convoys") {
-		t.Error("Response should contain error message")
+	// Error is displayed in the Errors section of the page
+	if !strings.Contains(body, "fetch failed") {
+		t.Error("Response should contain error message in page")
 	}
 }
 
@@ -227,23 +258,25 @@ func TestConvoyHandler_FetchConvoysError(t *testing.T) {
 func TestConvoyHandler_MergeQueueRendering(t *testing.T) {
 	mock := &MockConvoyFetcher{
 		Convoys: []ConvoyRow{},
-		MergeQueue: []MergeQueueRow{
+		InternalMRs: []InternalMRRow{
 			{
-				Number:     123,
-				Repo:       "roxas",
+				ID:         "mr-abc123",
+				Rig:        "roxas",
 				Title:      "Fix authentication bug",
-				URL:        "https://github.com/test/repo/pull/123",
-				CIStatus:   "pass",
-				Mergeable:  "ready",
+				Branch:     "polecat/dag/gt-abc",
+				Target:     "main",
+				Worker:     "dag",
+				Status:     "open",
 				ColorClass: "mq-green",
 			},
 			{
-				Number:     456,
-				Repo:       "gastown",
+				ID:         "mr-def456",
+				Rig:        "gastown",
 				Title:      "Add dashboard feature",
-				URL:        "https://github.com/test/repo/pull/456",
-				CIStatus:   "pending",
-				Mergeable:  "pending",
+				Branch:     "polecat/nux/gt-def",
+				Target:     "main",
+				Worker:     "nux",
+				Status:     "in_progress",
 				ColorClass: "mq-yellow",
 			},
 		},
@@ -270,25 +303,25 @@ func TestConvoyHandler_MergeQueueRendering(t *testing.T) {
 		t.Error("Response should contain merge queue section header")
 	}
 
-	// Check PR numbers are rendered
-	if !strings.Contains(body, "#123") {
-		t.Error("Response should contain PR #123")
+	// Check MR IDs are rendered
+	if !strings.Contains(body, "mr-abc123") {
+		t.Error("Response should contain MR mr-abc123")
 	}
-	if !strings.Contains(body, "#456") {
-		t.Error("Response should contain PR #456")
+	if !strings.Contains(body, "mr-def456") {
+		t.Error("Response should contain MR mr-def456")
 	}
 
-	// Check repo names
+	// Check rig names
 	if !strings.Contains(body, "roxas") {
-		t.Error("Response should contain repo 'roxas'")
+		t.Error("Response should contain rig 'roxas'")
 	}
 
-	// Check CI status badges
+	// Check status badges
 	if !strings.Contains(body, "ci-pass") {
-		t.Error("Response should contain ci-pass class for passing PR")
+		t.Error("Response should contain ci-pass class for queued MR")
 	}
 	if !strings.Contains(body, "ci-pending") {
-		t.Error("Response should contain ci-pending class for pending PR")
+		t.Error("Response should contain ci-pending class for processing MR")
 	}
 }
 
@@ -310,8 +343,8 @@ func TestConvoyHandler_EmptyMergeQueue(t *testing.T) {
 
 	body := w.Body.String()
 
-	// Should show empty state for merge queue
-	if !strings.Contains(body, "No PRs in queue") {
+	// Should show empty state for internal MRs (shown before GitHub PRs)
+	if !strings.Contains(body, "No MRs in queue") {
 		t.Error("Response should show empty merge queue message")
 	}
 }
@@ -538,13 +571,13 @@ func TestConvoyHandler_FullDashboard(t *testing.T) {
 				LastActivity: activity.Calculate(time.Now().Add(-1 * time.Minute)),
 			},
 		},
-		MergeQueue: []MergeQueueRow{
+		InternalMRs: []InternalMRRow{
 			{
-				Number:     789,
-				Repo:       "testrig",
-				Title:      "Test PR",
-				CIStatus:   "pass",
-				Mergeable:  "ready",
+				ID:         "mr-789",
+				Rig:        "testrig",
+				Title:      "Test MR",
+				Worker:     "worker1",
+				Status:     "open",
 				ColorClass: "mq-green",
 			},
 		},
@@ -576,7 +609,7 @@ func TestConvoyHandler_FullDashboard(t *testing.T) {
 	body := w.Body.String()
 
 	// Verify all three sections are present
-	if !strings.Contains(body, "Gas Town Convoys") {
+	if !strings.Contains(body, "Gas Town") {
 		t.Error("Response should contain main header")
 	}
 	if !strings.Contains(body, "hq-cv-full") {
@@ -585,8 +618,8 @@ func TestConvoyHandler_FullDashboard(t *testing.T) {
 	if !strings.Contains(body, "Refinery Merge Queue") {
 		t.Error("Response should contain merge queue section")
 	}
-	if !strings.Contains(body, "#789") {
-		t.Error("Response should contain PR data")
+	if !strings.Contains(body, "mr-789") {
+		t.Error("Response should contain MR data")
 	}
 	if !strings.Contains(body, "Polecat Workers") {
 		t.Error("Response should contain polecat section")
@@ -615,14 +648,13 @@ func TestE2E_Server_FullDashboard(t *testing.T) {
 				LastActivity: activity.Calculate(time.Now().Add(-45 * time.Second)),
 			},
 		},
-		MergeQueue: []MergeQueueRow{
+		InternalMRs: []InternalMRRow{
 			{
-				Number:     101,
-				Repo:       "roxas",
-				Title:      "E2E Test PR",
-				URL:        "https://github.com/test/roxas/pull/101",
-				CIStatus:   "pass",
-				Mergeable:  "ready",
+				ID:         "mr-101",
+				Rig:        "roxas",
+				Title:      "E2E Test MR",
+				Worker:     "furiosa",
+				Status:     "open",
 				ColorClass: "mq-green",
 			},
 		},
@@ -676,13 +708,13 @@ func TestE2E_Server_FullDashboard(t *testing.T) {
 		name    string
 		content string
 	}{
-		{"Convoy section header", "Gas Town Convoys"},
+		{"Convoy section header", "Gas Town"},
 		{"Convoy ID", "hq-cv-e2e"},
 		{"Convoy title", "E2E Test Convoy"},
 		{"Convoy progress", "2/4"},
 		{"Merge queue section", "Refinery Merge Queue"},
-		{"PR number", "#101"},
-		{"PR repo", "roxas"},
+		{"MR ID", "mr-101"},
+		{"MR rig", "roxas"},
 		{"Polecat section", "Polecat Workers"},
 		{"Polecat name", "furiosa"},
 		{"Polecat status", "Running E2E tests"},
@@ -776,9 +808,9 @@ func TestE2E_Server_MergeQueueEmpty(t *testing.T) {
 		t.Error("Merge queue section should always be visible")
 	}
 
-	// Empty state message
-	if !strings.Contains(body, "No PRs in queue") {
-		t.Error("Should show 'No PRs in queue' when empty")
+	// Empty state message (internal MRs shown first)
+	if !strings.Contains(body, "No MRs in queue") {
+		t.Error("Should show 'No MRs in queue' when empty")
 	}
 }
 
@@ -964,6 +996,34 @@ func (m *MockConvoyFetcherWithErrors) FetchPolecats() ([]PolecatRow, error) {
 	return nil, m.PolecatsError
 }
 
+func (m *MockConvoyFetcherWithErrors) FetchPolecatDetail(sessionID string) (*PolecatDetail, error) {
+	return &PolecatDetail{}, nil
+}
+
+func (m *MockConvoyFetcherWithErrors) FetchConvoyDetail(convoyID string) (*ConvoyDetail, error) {
+	return &ConvoyDetail{}, nil
+}
+
+func (m *MockConvoyFetcherWithErrors) FetchMergeHistory(limit int) ([]MergeHistoryRow, error) {
+	return nil, nil
+}
+
+func (m *MockConvoyFetcherWithErrors) FetchActivity(limit int) ([]ActivityEvent, error) {
+	return nil, nil
+}
+
+func (m *MockConvoyFetcherWithErrors) FetchHQAgents() ([]HQAgentRow, error) {
+	return nil, nil
+}
+
+func (m *MockConvoyFetcherWithErrors) FetchHQAgentDetail(sessionID string) (*HQAgentDetail, error) {
+	return &HQAgentDetail{}, nil
+}
+
+func (m *MockConvoyFetcherWithErrors) FetchInternalMRs() ([]InternalMRRow, error) {
+	return nil, nil
+}
+
 func TestConvoyHandler_NonFatalErrors(t *testing.T) {
 	mock := &MockConvoyFetcherWithErrors{
 		Convoys: []ConvoyRow{
@@ -993,5 +1053,121 @@ func TestConvoyHandler_NonFatalErrors(t *testing.T) {
 	// Convoys should still render
 	if !strings.Contains(body, "hq-cv-test") {
 		t.Error("Response should contain convoy data even when other fetches fail")
+	}
+}
+
+// Tests for detail endpoints
+
+func TestServePolecatDetail_MissingSessionID(t *testing.T) {
+	mock := &MockConvoyFetcher{}
+	handler, err := NewConvoyHandler(mock)
+	if err != nil {
+		t.Fatalf("NewConvoyHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/polecat/", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServePolecatDetail(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServePolecatDetail_Success(t *testing.T) {
+	mock := &MockConvoyFetcher{}
+	handler, err := NewConvoyHandler(mock)
+	if err != nil {
+		t.Fatalf("NewConvoyHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/polecat/gt-test-nux/details", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServePolecatDetail(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+	}
+}
+
+func TestServeConvoyDetail_MissingConvoyID(t *testing.T) {
+	mock := &MockConvoyFetcher{}
+	handler, err := NewConvoyHandler(mock)
+	if err != nil {
+		t.Fatalf("NewConvoyHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/convoy/", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeConvoyDetail(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServeConvoyDetail_Success(t *testing.T) {
+	mock := &MockConvoyFetcher{}
+	handler, err := NewConvoyHandler(mock)
+	if err != nil {
+		t.Fatalf("NewConvoyHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/convoy/hq-cv-abc/details", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeConvoyDetail(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+	}
+}
+
+func TestServeHQDetail_MissingSessionID(t *testing.T) {
+	mock := &MockConvoyFetcher{}
+	handler, err := NewConvoyHandler(mock)
+	if err != nil {
+		t.Fatalf("NewConvoyHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/hq/", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHQDetail(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestServeHQDetail_Success(t *testing.T) {
+	mock := &MockConvoyFetcher{}
+	handler, err := NewConvoyHandler(mock)
+	if err != nil {
+		t.Fatalf("NewConvoyHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/hq/hq-mayor/details", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHQDetail(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
 	}
 }
