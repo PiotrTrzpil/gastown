@@ -1,0 +1,33 @@
+<div class="polecat-detail">
+    <div class="detail-header">
+        <span class="polecat-name">{{.Name}}</span>
+        <span class="polecat-rig">@ {{.Rig}}</span>
+        <span class="uptime">Uptime: {{.Uptime}}</span>
+    </div>
+
+    {{if .HookBead}}
+    <div class="detail-section">
+        <div class="detail-label">Current Work:</div>
+        <div class="detail-value">
+            <span class="hook-bead">{{.HookBead}}</span>
+            {{if .HookTitle}}<span class="hook-title">{{.HookTitle}}</span>{{end}}
+        </div>
+    </div>
+    {{end}}
+
+    <div class="detail-section">
+        <div class="detail-label">Last Activity:</div>
+        <div class="detail-value {{activityClass .LastActivity}}">
+            <span class="activity-dot"></span>
+            {{.LastActivity.FormattedAge}}
+        </div>
+    </div>
+
+    {{if .TerminalLines}}
+    <div class="detail-section terminal-section">
+        <div class="detail-label">Terminal Output:</div>
+        <pre class="terminal-output">{{range .TerminalLines}}{{.}}
+{{end}}</pre>
+    </div>
+    {{end}}
+</div>

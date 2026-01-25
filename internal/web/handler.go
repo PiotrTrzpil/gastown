@@ -1,9 +1,25 @@
 package web
 
 import (
+	"bytes"
+	"fmt"
+	"html"
 	"html/template"
+	"log"
 	"net/http"
+	"strings"
 )
+
+// renderDetailError writes an HTML error message that htmx will display.
+// Uses 200 status because htmx ignores non-2xx responses by default.
+func renderDetailError(w http.ResponseWriter, context string, err error) {
+	log.Printf("Error %s : %v", context, err)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<div class="detail-error" style="padding: 16px; background: rgba(255,100,100,0.1); border-left: 3px solid var(--red, #f66); margin: 8px 0;">
+		<strong style="color: var(--red, #f66);">Error %s:</strong>
+		<pre style="margin: 8px 0 0 0; white-space: pre-wrap; font-size: 0.85em;">%s</pre>
+	</div>`, html.EscapeString(context), html.EscapeString(err.Error()))
+}
 
 // ConvoyFetcher defines the interface for fetching convoy data.
 type ConvoyFetcher interface {
@@ -12,14 +28,20 @@ type ConvoyFetcher interface {
 	FetchPolecats() ([]PolecatRow, error)
 }
 
+// DetailFetcher extends ConvoyFetcher with methods for expanded details.
+type DetailFetcher interface {
+	ConvoyFetcher
+	FetchPolecatDetail(sessionID string) (*PolecatDetail, error)
+}
+
 // ConvoyHandler handles HTTP requests for the convoy dashboard.
 type ConvoyHandler struct {
-	fetcher  ConvoyFetcher
+	fetcher  DetailFetcher
 	template *template.Template
 }
 
 // NewConvoyHandler creates a new convoy handler with the given fetcher.
-func NewConvoyHandler(fetcher ConvoyFetcher) (*ConvoyHandler, error) {
+func NewConvoyHandler(fetcher DetailFetcher) (*ConvoyHandler, error) {
 	tmpl, err := LoadTemplates()
 	if err != nil {
 		return nil, err
@@ -33,21 +55,26 @@ func NewConvoyHandler(fetcher ConvoyFetcher) (*ConvoyHandler, error) {
 
 // ServeHTTP handles GET / requests and renders the convoy dashboard.
 func (h *ConvoyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var errors []string
+
 	convoys, err := h.fetcher.FetchConvoys()
 	if err != nil {
-		http.Error(w, "Failed to fetch convoys", http.StatusInternalServerError)
-		return
+		log.Printf("Error fetching convoys: %v", err)
+		errors = append(errors, fmt.Sprintf("Convoys: %v", err))
+		convoys = nil // Show empty instead of crashing
 	}
 
 	mergeQueue, err := h.fetcher.FetchMergeQueue()
 	if err != nil {
-		// Non-fatal: show convoys even if merge queue fails
+		log.Printf("Error fetching merge queue: %v", err)
+		errors = append(errors, fmt.Sprintf("Merge Queue: %v", err))
 		mergeQueue = nil
 	}
 
 	polecats, err := h.fetcher.FetchPolecats()
 	if err != nil {
-		// Non-fatal: show convoys even if polecats fail
+		log.Printf("Error fetching polecats: %v", err)
+		errors = append(errors, fmt.Sprintf("Polecats: %v", err))
 		polecats = nil
 	}
 
@@ -55,12 +82,45 @@ func (h *ConvoyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Convoys:    convoys,
 		MergeQueue: mergeQueue,
 		Polecats:   polecats,
+		Errors:     errors,
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
-	if err := h.template.ExecuteTemplate(w, "convoy.html", data); err != nil {
+	// Execute to buffer first to avoid partial writes on error
+	var buf bytes.Buffer
+	if err := h.template.ExecuteTemplate(&buf, "convoy.html", data); err != nil {
+		log.Printf("template error: %v", err)
 		http.Error(w, "Failed to render template", http.StatusInternalServerError)
 		return
 	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
+}
+
+// ServePolecatDetail handles GET /polecat/{session}/details requests.
+func (h *ConvoyHandler) ServePolecatDetail(w http.ResponseWriter, r *http.Request) {
+	// Extract session ID from path: /polecat/{session}/details
+	path := strings.TrimPrefix(r.URL.Path, "/polecat/")
+	sessionID := strings.TrimSuffix(path, "/details")
+
+	if sessionID == "" {
+		http.Error(w, "Session ID required", http.StatusBadRequest)
+		return
+	}
+
+	detail, err := h.fetcher.FetchPolecatDetail(sessionID)
+	if err != nil {
+		renderDetailError(w, "fetching polecat "+sessionID, err)
+		return
+	}
+
+	var buf bytes.Buffer
+	if err := h.template.ExecuteTemplate(&buf, "polecat_detail.html", detail); err != nil {
+		log.Printf("template error: %v", err)
+		http.Error(w, "Failed to render template", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
 }

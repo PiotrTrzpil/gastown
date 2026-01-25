@@ -17,6 +17,7 @@ type ConvoyData struct {
 	Convoys    []ConvoyRow
 	MergeQueue []MergeQueueRow
 	Polecats   []PolecatRow
+	Errors     []string // Non-fatal errors to display in UI
 }
 
 // PolecatRow represents a polecat worker in the dashboard.
@@ -26,6 +27,15 @@ type PolecatRow struct {
 	SessionID    string        // e.g., "gt-roxas-dag"
 	LastActivity activity.Info // Colored activity display
 	StatusHint   string        // Last line from pane (optional)
+}
+
+// PolecatDetail contains expanded information for a polecat.
+type PolecatDetail struct {
+	PolecatRow
+	HookBead      string   // Current work assignment bead ID
+	HookTitle     string   // Title of hooked issue
+	Uptime        string   // Session duration (e.g., "45m", "2h 15m")
+	TerminalLines []string // Last N lines from tmux pane
 }
 
 // MergeQueueRow represents a PR in the merge queue.

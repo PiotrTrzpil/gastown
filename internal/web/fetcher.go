@@ -800,3 +800,132 @@ func parseActivityTimestamp(s string) (int64, bool) {
 	}
 	return unix, true
 }
+
+// FetchPolecatDetail fetches expanded details for a specific polecat session.
+func (f *LiveConvoyFetcher) FetchPolecatDetail(sessionID string) (*PolecatDetail, error) {
+	// Parse session name: gt-roxas-dag -> rig=roxas, polecat=dag
+	rig, polecat, ok := parsePolecatSessionName(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("invalid session ID format: %s", sessionID)
+	}
+
+	// Get session info with creation time
+	cmd := exec.Command("tmux", "list-sessions", "-F",
+		"#{session_name}|#{window_activity}|#{session_created}",
+		"-f", fmt.Sprintf("#{==:#{session_name},%s}", sessionID))
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	parts := strings.Split(output, "|")
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("unexpected tmux output format")
+	}
+
+	// Parse activity and creation timestamps
+	var activityUnix, createdUnix int64
+	fmt.Sscanf(parts[1], "%d", &activityUnix)
+	fmt.Sscanf(parts[2], "%d", &createdUnix)
+
+	activityTime := time.Unix(activityUnix, 0)
+	createdTime := time.Unix(createdUnix, 0)
+
+	// Calculate uptime
+	uptime := formatDuration(time.Since(createdTime))
+
+	// Get terminal lines from pane
+	terminalLines := f.getTerminalLines(sessionID, 20)
+
+	// Try to find hook bead (current work assignment)
+	hookBead, hookTitle := f.getPolecatHook(rig, polecat)
+
+	detail := &PolecatDetail{
+		PolecatRow: PolecatRow{
+			Name:         polecat,
+			Rig:          rig,
+			SessionID:    sessionID,
+			LastActivity: activity.Calculate(activityTime),
+		},
+		HookBead:      hookBead,
+		HookTitle:     hookTitle,
+		Uptime:        uptime,
+		TerminalLines: terminalLines,
+	}
+
+	return detail, nil
+}
+
+// getTerminalLines captures the last N lines from a tmux pane.
+func (f *LiveConvoyFetcher) getTerminalLines(sessionID string, n int) []string {
+	cmd := exec.Command("tmux", "capture-pane", "-t", sessionID, "-p", "-J")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+
+	lines := strings.Split(stdout.String(), "\n")
+
+	// Filter out empty lines and collect last N
+	var result []string
+	for i := len(lines) - 1; i >= 0 && len(result) < n; i-- {
+		line := strings.TrimRight(lines[i], " \t")
+		if line != "" {
+			result = append([]string{line}, result...)
+		}
+	}
+
+	return result
+}
+
+// getPolecatHook looks up the current work assignment for a polecat.
+// Returns (beadID, title) or ("", "") if not hooked.
+func (f *LiveConvoyFetcher) getPolecatHook(rig, polecat string) (string, string) {
+	// Query beads for issues assigned to this polecat
+	assignee := fmt.Sprintf("%s/polecats/%s", rig, polecat)
+	safeAssignee := strings.ReplaceAll(assignee, "'", "''")
+
+	dbPath := filepath.Join(f.townBeads, "beads.db")
+	// #nosec G204 -- sqlite3 path is from trusted config, assignee is escaped
+	cmd := exec.Command("sqlite3", "-json", dbPath,
+		fmt.Sprintf(`SELECT id, title FROM issues WHERE assignee = '%s' AND status = 'open' LIMIT 1`, safeAssignee))
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return "", ""
+	}
+
+	var issues []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &issues); err != nil || len(issues) == 0 {
+		return "", ""
+	}
+
+	return issues[0].ID, issues[0].Title
+}
+
+// formatDuration formats a duration in a human-readable way.
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	if mins == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh %dm", hours, mins)
+}

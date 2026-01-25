@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -60,27 +64,57 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("creating convoy handler: %w", err)
 	}
 
+	// Set up signal handling for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println("\n   Shutting down...")
+		cancel()
+	}()
+
+	// Set up routes
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handler.ServeHTTP)
+	mux.HandleFunc("/polecat/", handler.ServePolecatDetail)
+
 	// Build the URL
-	url := fmt.Sprintf("http://localhost:%d", dashboardPort)
+	dashURL := fmt.Sprintf("http://localhost:%d", dashboardPort)
 
 	// Open browser if requested
 	if dashboardOpen {
-		go openBrowser(url)
+		go openBrowser(dashURL)
 	}
 
 	// Start the server with timeouts
-	fmt.Printf("🚚 Gas Town Dashboard starting at %s\n", url)
+	fmt.Printf("🚚 Gas Town Dashboard starting at %s\n", dashURL)
 	fmt.Printf("   Press Ctrl+C to stop\n")
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", dashboardPort),
-		Handler:           handler,
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	return server.ListenAndServe()
+
+	// Use context for graceful shutdown
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+
+	err = server.ListenAndServe()
+	if err == http.ErrServerClosed {
+		return nil // Graceful shutdown
+	}
+	return err
 }
 
 // openBrowser opens the specified URL in the default browser.

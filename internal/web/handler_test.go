@@ -35,6 +35,10 @@ func (m *MockConvoyFetcher) FetchPolecats() ([]PolecatRow, error) {
 	return m.Polecats, nil
 }
 
+func (m *MockConvoyFetcher) FetchPolecatDetail(sessionID string) (*PolecatDetail, error) {
+	return nil, nil
+}
+
 func TestConvoyHandler_RendersTemplate(t *testing.T) {
 	mock := &MockConvoyFetcher{
 		Convoys: []ConvoyRow{
@@ -197,7 +201,7 @@ func TestConvoyHandler_MultipleConvoys(t *testing.T) {
 
 // Integration tests for error handling
 
-func TestConvoyHandler_FetchConvoysError(t *testing.T) {
+func TestConvoyHandler_FetchConvoysError_GracefulDegradation(t *testing.T) {
 	mock := &MockConvoyFetcher{
 		Error: errFetchFailed,
 	}
@@ -212,13 +216,18 @@ func TestConvoyHandler_FetchConvoysError(t *testing.T) {
 
 	handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("Status = %d, want %d", w.Code, http.StatusInternalServerError)
+	// With graceful degradation, we return 200 with an error banner
+	if w.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d (graceful degradation)", w.Code, http.StatusOK)
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, "Failed to fetch convoys") {
-		t.Error("Response should contain error message")
+	// Error should be displayed in the error banner
+	if !strings.Contains(body, "Some data could not be loaded") {
+		t.Error("Response should contain error banner")
+	}
+	if !strings.Contains(body, "Convoys:") {
+		t.Error("Response should contain convoy error message")
 	}
 }
 
@@ -962,6 +971,10 @@ func (m *MockConvoyFetcherWithErrors) FetchMergeQueue() ([]MergeQueueRow, error)
 
 func (m *MockConvoyFetcherWithErrors) FetchPolecats() ([]PolecatRow, error) {
 	return nil, m.PolecatsError
+}
+
+func (m *MockConvoyFetcherWithErrors) FetchPolecatDetail(sessionID string) (*PolecatDetail, error) {
+	return nil, nil
 }
 
 func TestConvoyHandler_NonFatalErrors(t *testing.T) {
