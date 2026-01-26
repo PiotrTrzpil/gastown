@@ -277,6 +277,16 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		if err := initTownAgentBeads(absPath); err != nil {
 			fmt.Printf("   %s Could not create town-level agent beads: %v\n", style.Dim.Render("⚠"), err)
 		}
+
+		// Set up beads redirects for agent working directories.
+		// Agents run from their own directories (deacon/, mayor/) for role detection,
+		// but bd commands should use town-level beads. These redirects ensure that
+		// if an agent runs bd without --db, it routes to the correct database.
+		for _, agentDir := range []string{"deacon", "mayor"} {
+			if err := setupTownBeadsRedirect(absPath, agentDir); err != nil {
+				fmt.Printf("   %s Could not set up %s beads redirect: %v\n", style.Dim.Render("⚠"), agentDir, err)
+			}
+		}
 	}
 
 	// Detect and save overseer identity
@@ -570,5 +580,31 @@ func ensureBeadsCustomTypes(workDir string, types []string) error {
 	if err != nil {
 		return fmt.Errorf("bd config set types.custom failed: %s", strings.TrimSpace(string(output)))
 	}
+	return nil
+}
+
+// setupTownBeadsRedirect creates a .beads/redirect in an agent's working directory
+// that points to the town-level beads database.
+//
+// Agents like Deacon and Mayor run from their own directories (~/gt/deacon/, ~/gt/mayor/)
+// for role detection purposes. However, their bd operations should use the town-level
+// beads at ~/gt/.beads/. This redirect ensures that bd commands work correctly even
+// if an agent runs them without explicitly specifying --db.
+func setupTownBeadsRedirect(townRoot, agentDir string) error {
+	agentPath := filepath.Join(townRoot, agentDir)
+	agentBeadsDir := filepath.Join(agentPath, ".beads")
+
+	// Create .beads directory if it doesn't exist
+	if err := os.MkdirAll(agentBeadsDir, 0755); err != nil {
+		return fmt.Errorf("creating .beads dir: %w", err)
+	}
+
+	// Write redirect file pointing to town-level beads
+	redirectFile := filepath.Join(agentBeadsDir, "redirect")
+	redirectContent := "../.beads\n"
+	if err := os.WriteFile(redirectFile, []byte(redirectContent), 0644); err != nil {
+		return fmt.Errorf("creating redirect file: %w", err)
+	}
+
 	return nil
 }
